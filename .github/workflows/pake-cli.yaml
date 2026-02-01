@@ -10,7 +10,7 @@ on:
       platform:
         description: "Platform"
         required: true
-        default: "macos-latest"
+        default: "windows-latest"
         type: choice
         options:
           - "windows-latest"
@@ -19,11 +19,13 @@ on:
       url:
         description: "Website URL"
         required: true
+        default: "https://ai-buddy.george888.top"
       name:
-        description: "App name (lowercase for Linux)"
+        description: "App name"
         required: true
+        default: "AIBuddy"
       icon:
-        description: "Icon URL, auto-fetch if empty"
+        description: "Icon URL (optional)"
         required: false
       width:
         description: "Window width (px)"
@@ -43,19 +45,10 @@ on:
         required: false
         type: boolean
         default: false
-      multi_arch:
-        description: "Universal binary (macOS only)"
-        required: false
-        type: boolean
-        default: false
-      targets:
-        description: "Package formats (comma-separated: deb,appimage,rpm)"
-        required: false
-        default: "deb"
 
 jobs:
   build:
-    name: ${{ inputs.platform }}
+    name: Build on ${{ inputs.platform }}
     runs-on: ${{ inputs.platform }}
     strategy:
       fail-fast: false
@@ -69,142 +62,61 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Setup Node.js Environment
-        uses: ./.github/actions/setup-env
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          mode: build
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Build CLI
-        run: pnpm run cli:build
-
-      - name: Setup mold linker
-        if: runner.os == 'Linux'
-        uses: rui314/setup-mold@v1
-
-      - name: Rust cache restore
-        uses: actions/cache/restore@v4.2.0
-        id: cache_store
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}
+          version: ${{ env.PNPM_VERSION }}
 
-      - name: Build App (Linux/macOS)
+      - name: Install Pake CLI
+        run: npm install -g pake-cli
+
+      - name: Build App (Non-Windows)
         if: runner.os != 'Windows'
-        timeout-minutes: 25
         shell: bash
         run: |
-          ARGS="${{ inputs.url }} --name ${{ inputs.name }}"
+          pake ${{ inputs.url }} --name ${{ inputs.name }} \
+            ${{ inputs.icon && format('--icon {0}', inputs.icon) || '' }} \
+            --width ${{ inputs.width }} --height ${{ inputs.height }} \
+            ${{ inputs.fullscreen == 'true' && '--fullscreen' || '' }} \
+            ${{ inputs.hide_title_bar == 'true' && '--hide-title-bar' || '' }}
 
-          if [ -n "${{ inputs.icon }}" ]; then
-            ARGS="$ARGS --icon ${{ inputs.icon }}"
-          fi
-
-          if [ -n "${{ inputs.width }}" ]; then
-            ARGS="$ARGS --width ${{ inputs.width }}"
-          fi
-
-          if [ -n "${{ inputs.height }}" ]; then
-            ARGS="$ARGS --height ${{ inputs.height }}"
-          fi
-
-          if [ "${{ inputs.fullscreen }}" == "true" ]; then
-            ARGS="$ARGS --fullscreen"
-          fi
-
-          if [ "${{ inputs.hide_title_bar }}" == "true" ]; then
-            ARGS="$ARGS --hide-title-bar"
-          fi
-
-          if [ "${{ inputs.multi_arch }}" == "true" ]; then
-            ARGS="$ARGS --multi-arch"
-          fi
-
-          if [ -n "${{ inputs.targets }}" ] && [ "${{ runner.os }}" == "Linux" ]; then
-            ARGS="$ARGS --targets ${{ inputs.targets }}"
-          fi
-
-          echo "Running: node dist/cli.js $ARGS"
-          node dist/cli.js $ARGS
-
-      - name: Build App (Windows)
+      - name: Build App (Windows EXE)
         if: runner.os == 'Windows'
-        timeout-minutes: 25
         shell: pwsh
         run: |
-          $args = "${{ inputs.url }}", "--name", "${{ inputs.name }}"
+          # 使用 --targets exe 避开 light.exe/WiX 报错
+          pake ${{ inputs.url }} --name ${{ inputs.name }} --targets exe `
+            --width ${{ inputs.width }} --height ${{ inputs.height }} `
+            $(if ("${{ inputs.icon }}" -ne "") { "--icon ${{ inputs.icon }}" }) `
+            $(if ("${{ inputs.fullscreen }}" -eq "true") { "--fullscreen" })
 
-          if ("${{ inputs.icon }}" -ne "") {
-            $args += "--icon", "${{ inputs.icon }}"
-          }
+      - name: Upload Artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-Windows-Portable
+          path: "*.exe"
+          retention-days: 3
 
-          if ("${{ inputs.width }}" -ne "") {
-            $args += "--width", "${{ inputs.width }}"
-          }
-
-          if ("${{ inputs.height }}" -ne "") {
-            $args += "--height", "${{ inputs.height }}"
-          }
-
-          if ("${{ inputs.fullscreen }}" -eq "true") {
-            $args += "--fullscreen"
-          }
-
-          if ("${{ inputs.hide_title_bar }}" -eq "true") {
-            $args += "--hide-title-bar"
-          }
-
-          Write-Host "Running: node dist/cli.js $($args -join ' ')"
-          node dist/cli.js $args
-
-          git checkout -- src-tauri/Cargo.lock
-
-      - name: Upload DMG (macOS)
+      - name: Upload Artifact (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.name }}-macOS
-          path: ${{ inputs.name }}.dmg
+          path: "*.dmg"
           retention-days: 3
 
-      - name: Upload DEB (Linux)
+      - name: Upload Artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.name }}-Linux-deb
-          path: ${{ inputs.name }}.deb
-          retention-days: 3
-          if-no-files-found: ignore
-
-      - name: Upload AppImage (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.name }}-Linux-AppImage
-          path: ${{ inputs.name }}.AppImage
-          retention-days: 3
-          if-no-files-found: ignore
-
-      - name: Upload MSI (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.name }}-Windows
-          path: ${{ inputs.name }}.msi
-          retention-days: 3
-
-      - name: Rust cache store
-        uses: actions/cache/save@v4.2.0
-        if: steps.cache_store.outputs.cache-hit != 'true'
-        with:
+          name: ${{ inputs.name }}-Linux
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}
+            *.deb
+            *.AppImage
+          retention-days: 3
