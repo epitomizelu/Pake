@@ -99,8 +99,11 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.name }}-Windows-Portable
-          path: "*.exe"
+          name: ${{ inputs.name }}-Windows-Package
+          # 使用通配符递归搜索所有生成的 msi 和 exe
+          path: |
+            **/*.msi
+            **/release/*.exe
           retention-days: 3
 
       - name: Upload Artifact (macOS)
